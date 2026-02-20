@@ -1,0 +1,158 @@
+Отлично, теперь вижу формат! Это FPS-счётчики — белый текст на фиолетовом фоне, чёрный задний план. Очень удобно для распознавания.
+
+Да, можно сделать через GitHub — создадим веб-приложение, куда ты загружаешь видео прямо в браузере!
+
+Давай я создам полный проект:
+
+Структура проекта для GitHub
+
+fps-video-analyzer/
+├── index.html
+├── style.css
+├── app.js
+└── README.md
+index.html
+html
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FPS Video Analyzer</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>📹 FPS Video Analyzer</h1>
+        <p class="subtitle">Загрузи видео с двумя FPS-счётчиками для анализа</p>
+
+        <div class="upload-area" id="uploadArea">
+            <input type="file" id="videoInput" accept="video/*" hidden>
+            <div class="upload-content">
+                <span class="upload-icon">📁</span>
+                <p>Нажми или перетащи видео сюда</p>
+                <p class="upload-hint">Поддерживаются: MP4, AVI, MOV, WebM</p>
+            </div>
+        </div>
+
+        <div class="settings" id="settings" style="display:none;">
+            <h3>⚙️ Настройки</h3>
+            <div class="settings-grid">
+                <div class="setting-item">
+                    <label>Анализировать каждый N-й кадр:</label>
+                    <input type="number" id="frameInterval" value="15" min="1" max="120">
+                    <span class="hint">Больше = быстрее, меньше = точнее</span>
+                </div>
+                <div class="setting-item">
+                    <label>Порог резкого скачка (FPS):</label>
+                    <input type="number" id="jumpThreshold" value="30" min="1" max="200">
+                </div>
+            </div>
+        </div>
+
+        <div class="video-section" id="videoSection" style="display:none;">
+            <h3>🎬 Предпросмотр и выбор областей</h3>
+            <p class="info">Нажми <strong>"Выбрать области"</strong>, затем нарисуй прямоугольники вокруг верхнего и нижнего FPS</p>
+            
+            <div class="video-wrapper">
+                <video id="videoPlayer" controls></video>
+                <canvas id="overlayCanvas"></canvas>
+            </div>
+
+            <div class="roi-buttons">
+                <button id="btnSelectROI" class="btn btn-blue">🎯 Выбрать области</button>
+                <button id="btnResetROI" class="btn btn-gray">🔄 Сбросить</button>
+                <button id="btnAutoDetect" class="btn btn-green">🤖 Авто-определение</button>
+            </div>
+
+            <div class="roi-status" id="roiStatus">
+                <div class="roi-item" id="roiTop">⬜ Верхний FPS: не выбран</div>
+                <div class="roi-item" id="roiBottom">⬜ Нижний FPS: не выбран</div>
+            </div>
+
+            <button id="btnAnalyze" class="btn btn-primary btn-large" disabled>
+                🚀 Начать анализ
+            </button>
+        </div>
+
+        <div class="progress-section" id="progressSection" style="display:none;">
+            <h3>⏳ Анализ видео...</h3>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <p id="progressText">0%</p>
+            <p id="progressDetails" class="hint"></p>
+            <canvas id="debugCanvas" width="400" height="100"></canvas>
+            <p class="hint">Последний распознанный кадр (отладка)</p>
+        </div>
+
+        <div class="results-section" id="resultsSection" style="display:none;">
+            <h2>📊 Результаты анализа</h2>
+            
+            <div class="results-grid">
+                <div class="result-card">
+                    <h3>1. Верхний FPS</h3>
+                    <div class="result-rows">
+                        <div class="result-row">
+                            <span>Максимальное число</span>
+                            <span id="topMax" class="value">—</span>
+                        </div>
+                        <div class="result-row">
+                            <span>Минимальное число</span>
+                            <span id="topMin" class="value">—</span>
+                        </div>
+                        <div class="result-row">
+                            <span>Среднее число</span>
+                            <span id="topAvg" class="value">—</span>
+                        </div>
+                        <div class="result-row">
+                            <span>Количество резких скачков</span>
+                            <span id="topJumps" class="value">—</span>
+                        </div>
+                        <div class="result-row hint-row">
+                            <span>Всего замеров</span>
+                            <span id="topCount" class="value">—</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="result-card">
+                    <h3>2. Нижний FPS</h3>
+                    <div class="result-rows">
+                        <div class="result-row">
+                            <span>Максимальное число</span>
+                            <span id="botMax" class="value">—</span>
+                        </div>
+                        <div class="result-row">
+                            <span>Минимальное число</span>
+                            <span id="botMin" class="value">—</span>
+                        </div>
+                        <div class="result-row">
+                            <span>Среднее число</span>
+                            <span id="botAvg" class="value">—</span>
+                        </div>
+                        <div class="result-row">
+                            <span>Количество резких скачков</span>
+                            <span id="botJumps" class="value">—</span>
+                        </div>
+                        <div class="result-row hint-row">
+                            <span>Всего замеров</span>
+                            <span id="botCount" class="value">—</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="export-buttons">
+                <button id="btnExportTxt" class="btn btn-blue">📄 Скачать TXT</button>
+                <button id="btnExportCsv" class="btn btn-green">📊 Скачать CSV</button>
+                <button id="btnCopy" class="btn btn-gray">📋 Копировать</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
