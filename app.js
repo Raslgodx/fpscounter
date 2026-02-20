@@ -1,400 +1,544 @@
-// =============================================
-// FPS Video Analyzer — Main Application
-// =============================================
+/* ============================================
+   FPS Video Analyzer — Full Application
+   ============================================ */
 
-const $ = id => document.getElementById(id);
+// --- Helpers ---
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// State
-let videoFile = null;
-let videoEl = $('videoPlayer');
-let overlayCanvas = $('overlayCanvas');
-let overlayCtx = overlayCanvas.getContext('2d');
-let rois = { top: null, bottom: null };
-let selectingROI = null; // 'top' | 'bottom' | null
-let drawStart = null;
-let currentRect = null;
+// --- State ---
+let roi = { top: null, bot: null };
+let selecting = null;       // 'top' | 'bot' | null
+let dragStart = null;
+let dragRect = null;
 let topData = [];
 let botData = [];
-let isAnalyzing = false;
+let busy = false;
+
+// --- Elements ---
+const video      = $('video');
+const overlay    = $('overlay');
+const ctx        = overlay.getContext('2d');
 
 // =============================================
-// FILE UPLOAD
+// 1. FILE UPLOAD
 // =============================================
 
-$('uploadArea').addEventListener('click', () => $('videoInput').click());
+$('uploadArea').onclick = () => $('videoInput').click();
 
-$('uploadArea').addEventListener('dragover', e => {
+$('uploadArea').ondragover = (e) => {
     e.preventDefault();
-    $('uploadArea').classList.add('dragover');
-});
-
-$('uploadArea').addEventListener('dragleave', () => {
-    $('uploadArea').classList.remove('dragover');
-});
-
-$('uploadArea').addEventListener('drop', e => {
+    $('uploadArea').classList.add('over');
+};
+$('uploadArea').ondragleave = () => $('uploadArea').classList.remove('over');
+$('uploadArea').ondrop = (e) => {
     e.preventDefault();
-    $('uploadArea').classList.remove('dragover');
-    if (e.dataTransfer.files.length) {
-        handleFile(e.dataTransfer.files[0]);
-    }
-});
+    $('uploadArea').classList.remove('over');
+    if (e.dataTransfer.files.length) loadVideo(e.dataTransfer.files[0]);
+};
+$('videoInput').onchange = (e) => {
+    if (e.target.files.length) loadVideo(e.target.files[0]);
+};
 
-$('videoInput').addEventListener('change', e => {
-    if (e.target.files.length) {
-        handleFile(e.target.files[0]);
-    }
-});
-
-function handleFile(file) {
+function loadVideo(file) {
     if (!file.type.startsWith('video/')) {
-        alert('Пожалуйста, выбери видео файл!');
+        alert('Выбери видео файл!');
         return;
     }
-    videoFile = file;
-    const url = URL.createObjectURL(file);
-    videoEl.src = url;
-    
-    $('uploadArea').innerHTML = `
-        <div class="upload-content">
-            <span class="upload-icon">✅</span>
-            <p>${file.name}</p>
-            <p class="upload-hint">${(file.size / 1024 / 1024).toFixed(1)} MB — нажми чтобы заменить</p>
-        </div>
-    `;
-    
-    $('settings').style.display = 'block';
-    $('videoSection').style.display = 'block';
-    $('resultsSection').style.display = 'none';
-    
-    videoEl.addEventListener('loadedmetadata', () => {
-        overlayCanvas.width = videoEl.videoWidth;
-        overlayCanvas.height = videoEl.videoHeight;
-    });
-}
+    video.src = URL.createObjectURL(file);
+    video.load();
 
-// =============================================
-// ROI SELECTION
-// =============================================
+    $('uploadArea').innerHTML =
+        `<span class="upload-icon">✅</span>
+         <p>${file.name}</p>
+         <p class="hint">${(file.size / 1048576).toFixed(1)} MB</p>`;
+    $('uploadArea').classList.add('done');
 
-$('btnSelectROI').addEventListener('click', startROISelection);
-$('btnResetROI').addEventListener('click', resetROIs);
-$('btnAutoDetect').addEventListener('click', autoDetectROIs);
-
-function startROISelection() {
-    if (!rois.top) {
-        selectingROI = 'top';
-        alert('Нарисуй прямоугольник вокруг ВЕРХНЕГО FPS на видео');
-    } else if (!rois.bottom) {
-        selectingROI = 'bottom';
-        alert('Нарисуй прямоугольник вокруг НИЖНЕГО FPS на видео');
-    } else {
-        alert('Обе области уже выбраны! Нажми "Сбросить" чтобы начать заново.');
-        return;
-    }
-    
-    // Делаем canvas интерактивным
-    overlayCanvas.style.pointerEvents = 'auto';
-    overlayCanvas.style.cursor = 'crosshair';
-    
-    overlayCanvas.onmousedown = onMouseDown;
-    overlayCanvas.onmousemove = onMouseMove;
-    overlayCanvas.onmouseup = onMouseUp;
-}
-
-function getCanvasCoords(e) {
-    const rect = overlayCanvas.getBoundingClientRect();
-    const scaleX = overlayCanvas.width / rect.width;
-    const scaleY = overlayCanvas.height / rect.height;
-    return {
-        x: (e.clientX - rect.left) * scaleX,
-        y: (e.clientY - rect.top) * scaleY
+    video.onloadedmetadata = () => {
+        overlay.width  = video.videoWidth;
+        overlay.height = video.videoHeight;
+        $('settingsSection').style.display = '';
+        $('videoSection').style.display    = '';
+        $('resultsSection').style.display  = 'none';
     };
 }
 
-function onMouseDown(e) {
-    drawStart = getCanvasCoords(e);
+// =============================================
+// 2. ROI SELECTION
+// =============================================
+
+$('btnSelect').onclick = beginSelect;
+$('btnReset').onclick   = resetROI;
+$('btnAuto').onclick    = autoDetect;
+
+function beginSelect() {
+    if (!roi.top) {
+        selecting = 'top';
+        alert('Нарисуй прямоугольник вокруг ВЕРХНЕГО FPS');
+    } else if (!roi.bot) {
+        selecting = 'bot';
+        alert('Нарисуй прямоугольник вокруг НИЖНЕГО FPS');
+    } else {
+        alert('Обе области выбраны! Нажми "Сброс" чтобы заново.');
+        return;
+    }
+    enableDraw(true);
 }
 
-function onMouseMove(e) {
-    if (!drawStart) return;
-    const pos = getCanvasCoords(e);
-    currentRect = {
-        x: Math.min(drawStart.x, pos.x),
-        y: Math.min(drawStart.y, pos.y),
-        w: Math.abs(pos.x - drawStart.x),
-        h: Math.abs(pos.y - drawStart.y)
+function enableDraw(on) {
+    overlay.style.pointerEvents = on ? 'auto' : 'none';
+    overlay.style.cursor        = on ? 'crosshair' : '';
+    if (on) {
+        overlay.onmousedown  = onDown;
+        overlay.onmousemove  = onMove;
+        overlay.onmouseup    = onUp;
+        overlay.ontouchstart = onTouchDown;
+        overlay.ontouchmove  = onTouchMove;
+        overlay.ontouchend   = onTouchUp;
+    } else {
+        overlay.onmousedown = overlay.onmousemove = overlay.onmouseup = null;
+        overlay.ontouchstart = overlay.ontouchmove = overlay.ontouchend = null;
+    }
+}
+
+function coords(e) {
+    const r = overlay.getBoundingClientRect();
+    const sx = overlay.width / r.width;
+    const sy = overlay.height / r.height;
+    return { x: (e.clientX - r.left) * sx, y: (e.clientY - r.top) * sy };
+}
+
+function onDown(e) { dragStart = coords(e); }
+function onMove(e) {
+    if (!dragStart) return;
+    const p = coords(e);
+    dragRect = {
+        x: Math.min(dragStart.x, p.x),
+        y: Math.min(dragStart.y, p.y),
+        w: Math.abs(p.x - dragStart.x),
+        h: Math.abs(p.y - dragStart.y)
     };
     drawOverlay();
 }
+function onUp() { finishDrag(); }
 
-function onMouseUp(e) {
-    if (!drawStart || !currentRect) return;
-    
-    if (currentRect.w > 10 && currentRect.h > 10) {
-        rois[selectingROI] = { ...currentRect };
-        updateROIStatus();
-        
-        if (selectingROI === 'top' && !rois.bottom) {
-            selectingROI = 'bottom';
-            drawStart = null;
-            currentRect = null;
+// Touch support
+function onTouchDown(e) { e.preventDefault(); dragStart = coords(e.touches[0]); }
+function onTouchMove(e) {
+    e.preventDefault();
+    if (!dragStart) return;
+    const p = coords(e.touches[0]);
+    dragRect = {
+        x: Math.min(dragStart.x, p.x),
+        y: Math.min(dragStart.y, p.y),
+        w: Math.abs(p.x - dragStart.x),
+        h: Math.abs(p.y - dragStart.y)
+    };
+    drawOverlay();
+}
+function onTouchUp(e) { e.preventDefault(); finishDrag(); }
+
+function finishDrag() {
+    if (dragRect && dragRect.w > 10 && dragRect.h > 10) {
+        roi[selecting] = { ...dragRect };
+        updateLabels();
+
+        // Сразу предложить нижний
+        if (selecting === 'top' && !roi.bot) {
+            selecting = 'bot';
+            dragStart = dragRect = null;
+            drawOverlay();
             alert('Теперь нарисуй прямоугольник вокруг НИЖНЕГО FPS');
             return;
         }
     }
-    
-    drawStart = null;
-    currentRect = null;
-    selectingROI = null;
-    overlayCanvas.style.pointerEvents = 'none';
-    overlayCanvas.style.cursor = 'default';
-    overlayCanvas.onmousedown = null;
-    overlayCanvas.onmousemove = null;
-    overlayCanvas.onmouseup = null;
-    
+    dragStart = dragRect = null;
+    selecting = null;
+    enableDraw(false);
     drawOverlay();
-    checkReady();
+    $('btnStart').disabled = !(roi.top && roi.bot);
+}
+
+function resetROI() {
+    roi = { top: null, bot: null };
+    selecting = null;
+    dragStart = dragRect = null;
+    enableDraw(false);
+    drawOverlay();
+    updateLabels();
+    $('btnStart').disabled = true;
+}
+
+function updateLabels() {
+    const fmt = (r) => r ? `${Math.round(r.w)}×${Math.round(r.h)}` : '—';
+    $('roiTopLabel').textContent = roi.top ? `✅ Верх: ${fmt(roi.top)}` : '⬜ Верх: —';
+    $('roiBotLabel').textContent = roi.bot ? `✅ Низ: ${fmt(roi.bot)}` : '⬜ Низ: —';
+    $('roiTopLabel').className = roi.top ? 'ok' : '';
+    $('roiBotLabel').className = roi.bot ? 'ok' : '';
 }
 
 function drawOverlay() {
-    overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-    
-    // Нарисовать сохранённые ROI
-    if (rois.top) {
-        drawRect(rois.top, '#22c55e', 'Верхний FPS');
-    }
-    if (rois.bottom) {
-        drawRect(rois.bottom, '#3b82f6', 'Нижний FPS');
-    }
-    
-    // Текущий прямоугольник
-    if (currentRect) {
-        const color = selectingROI === 'top' ? '#22c55e' : '#3b82f6';
-        drawRect(currentRect, color, selectingROI === 'top' ? 'Верхний FPS' : 'Нижний FPS');
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    if (roi.top) drawBox(roi.top, '#22c55e', 'Верхний FPS');
+    if (roi.bot) drawBox(roi.bot, '#3b82f6', 'Нижний FPS');
+    if (dragRect) {
+        const clr = selecting === 'top' ? '#22c55e' : '#3b82f6';
+        const lbl = selecting === 'top' ? 'Верхний FPS' : 'Нижний FPS';
+        drawBox(dragRect, clr, lbl);
     }
 }
 
-function drawRect(r, color, label) {
-    overlayCtx.strokeStyle = color;
-    overlayCtx.lineWidth = 3;
-    overlayCtx.strokeRect(r.x, r.y, r.w, r.h);
-    
-    overlayCtx.fillStyle = color;
-    overlayCtx.font = 'bold 16px sans-serif';
-    overlayCtx.fillText(label, r.x, r.y - 5);
-}
-
-function resetROIs() {
-    rois = { top: null, bottom: null };
-    selectingROI = null;
-    drawStart = null;
-    currentRect = null;
-    overlayCanvas.style.pointerEvents = 'none';
-    drawOverlay();
-    updateROIStatus();
-    checkReady();
-}
-
-function updateROIStatus() {
-    $('roiTop').textContent = rois.top
-        ? `✅ Верхний FPS: ${Math.round(rois.top.w)}×${Math.round(rois.top.h)}`
-        : '⬜ Верхний FPS: не выбран';
-    $('roiTop').className = 'roi-item' + (rois.top ? ' selected' : '');
-    
-    $('roiBottom').textContent = rois.bottom
-        ? `✅ Нижний FPS: ${Math.round(rois.bottom.w)}×${Math.round(rois.bottom.h)}`
-        : '⬜ Нижний FPS: не выбран';
-    $('roiBottom').className = 'roi-item' + (rois.bottom ? ' selected' : '');
-}
-
-function checkReady() {
-    $('btnAnalyze').disabled = !(rois.top && rois.bottom);
+function drawBox(r, color, label) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(r.x, r.y, r.w, r.h);
+    ctx.fillStyle = color;
+    ctx.font = 'bold 14px sans-serif';
+    ctx.fillText(label, r.x + 4, r.y - 6);
 }
 
 // =============================================
-// AUTO DETECT (ищет фиолетовые прямоугольники)
+// 3. AUTO DETECT (ищет фиолетовые плашки)
 // =============================================
 
-async function autoDetectROIs() {
-    videoEl.currentTime = 0;
-    await new Promise(r => videoEl.onseeked = r);
-    
-    const canvas = document.createElement('canvas');
-    canvas.width = videoEl.videoWidth;
-    canvas.height = videoEl.videoHeight;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(videoEl, 0, 0);
-    
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const data = imageData.data;
-    
-    // Ищем фиолетовые пиксели (цвет фона FPS-счётчика)
-    const purpleMask = new Uint8Array(canvas.width * canvas.height);
-    
-    for (let i = 0; i < data.length; i += 4) {
-        const r = data[i], g = data[i+1], b = data[i+2];
-        // Фиолетовый: R примерно 60-120, G 50-100, B 100-180
-        if (r > 40 && r < 140 && g > 30 && g < 110 && b > 80 && b < 200 && b > r) {
-            purpleMask[i / 4] = 1;
+async function autoDetect() {
+    video.currentTime = 0.5;
+    await new Promise((r) => (video.onseeked = r));
+
+    const c = document.createElement('canvas');
+    c.width = video.videoWidth;
+    c.height = video.videoHeight;
+    const cx = c.getContext('2d');
+    cx.drawImage(video, 0, 0);
+
+    const img = cx.getImageData(0, 0, c.width, c.height);
+    const d = img.data;
+
+    // Маска фиолетовых пикселей
+    const mask = [];
+    for (let i = 0; i < d.length; i += 4) {
+        const r = d[i], g = d[i + 1], b = d[i + 2];
+        mask.push(r > 40 && r < 150 && g > 30 && g < 120 && b > 80 && b < 210 && b > r ? 1 : 0);
+    }
+
+    // Проецируем на Y-ось — горизонтальные полосы фиолетового
+    const yHist = new Float32Array(c.height);
+    for (let y = 0; y < c.height; y++) {
+        let count = 0;
+        for (let x = 0; x < c.width; x++) {
+            count += mask[y * c.width + x];
         }
+        yHist[y] = count / c.width;
     }
-    
-    // Находим bounding boxes фиолетовых областей
-    const boxes = findBoundingBoxes(purpleMask, canvas.width, canvas.height);
-    
-    if (boxes.length >= 2) {
-        // Сортируем по Y (верхний первый)
-        boxes.sort((a, b) => a.y - b.y);
-        rois.top = boxes[0];
-        rois.bottom = boxes[1];
-        drawOverlay();
-        updateROIStatus();
-        checkReady();
-        alert('✅ Области автоматически определены!');
-    } else if (boxes.length === 1) {
-        rois.top = boxes[0];
-        drawOverlay();
-        updateROIStatus();
-        alert('⚠️ Найдена только одна область. Выбери вторую вручную.');
-    } else {
-        alert('❌ Не удалось автоматически найти области. Выбери вручную.');
-    }
-}
 
-function findBoundingBoxes(mask, width, height) {
-    const visited = new Uint8Array(width * height);
-    const boxes = [];
-    
-    for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-            const idx = y * width + x;
-            if (mask[idx] && !visited[idx]) {
-                // BFS
-                let minX = x, maxX = x, minY = y, maxY = y;
-                let count = 0;
-                const queue = [[x, y]];
-                visited[idx] = 1;
-                
-                while (queue.length > 0) {
-                    const [cx, cy] = queue.shift();
-                    count++;
-                    minX = Math.min(minX, cx);
-                    maxX = Math.max(maxX, cx);
-                    minY = Math.min(minY, cy);
-                    maxY = Math.max(maxY, cy);
-                    
-                    for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
-                        const nx = cx + dx, ny = cy + dy;
-                        if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-                            const ni = ny * width + nx;
-                            if (mask[ni] && !visited[ni]) {
-                                visited[ni] = 1;
-                                queue.push([nx, ny]);
-                            }
-                        }
-                    }
-                }
-                
-                // Фильтр: минимальный размер области
-                const bw = maxX - minX;
-                const bh = maxY - minY;
-                if (count > 500 && bw > 50 && bh > 20) {
-                    boxes.push({ x: minX, y: minY, w: bw, h: bh });
-                }
+    // Находим полосы (где >15% ширины фиолетового)
+    const bands = [];
+    let inBand = false, bandStart = 0;
+    for (let y = 0; y < c.height; y++) {
+        if (yHist[y] > 0.15 && !inBand) {
+            inBand = true;
+            bandStart = y;
+        }
+        if (yHist[y] <= 0.15 && inBand) {
+            inBand = false;
+            if (y - bandStart > 15) {
+                bands.push({ y1: bandStart, y2: y });
             }
         }
     }
-    
-    return boxes;
+
+    if (bands.length < 2) {
+        alert('❌ Не удалось найти 2 области. Выбери вручную.');
+        return;
+    }
+
+    // Для каждой полосы находим X-границы
+    function findXBounds(band) {
+        let minX = c.width, maxX = 0;
+        for (let y = band.y1; y < band.y2; y++) {
+            for (let x = 0; x < c.width; x++) {
+                if (mask[y * c.width + x]) {
+                    minX = Math.min(minX, x);
+                    maxX = Math.max(maxX, x);
+                }
+            }
+        }
+        return { x: minX, y: band.y1, w: maxX - minX, h: band.y2 - band.y1 };
+    }
+
+    roi.top = findXBounds(bands[0]);
+    roi.bot = findXBounds(bands[1]);
+
+    // Добавляем небольшой padding
+    [roi.top, roi.bot].forEach((r) => {
+        r.x = Math.max(0, r.x - 5);
+        r.y = Math.max(0, r.y - 5);
+        r.w += 10;
+        r.h += 10;
+    });
+
+    drawOverlay();
+    updateLabels();
+    $('btnStart').disabled = false;
+    alert('✅ Области найдены автоматически!');
 }
 
 // =============================================
-// ANALYSIS
+// 4. ANALYSIS (Tesseract OCR)
 // =============================================
 
-$('btnAnalyze').addEventListener('click', startAnalysis);
+$('btnStart').onclick = runAnalysis;
 
-async function startAnalysis() {
-    if (isAnalyzing) return;
-    isAnalyzing = true;
-    
+async function runAnalysis() {
+    if (busy) return;
+    busy = true;
     topData = [];
     botData = [];
-    
-    const interval = parseInt($('frameInterval').value) || 15;
-    const threshold = parseInt($('jumpThreshold').value) || 30;
-    
-    $('progressSection').style.display = 'block';
-    $('resultsSection').style.display = 'none';
-    $('btnAnalyze').disabled = true;
-    $('btnAnalyze').textContent = '⏳ Анализ...';
-    
-    // Инициализация Tesseract
-    $('progressText').textContent = 'Загрузка OCR...';
-    
-    const worker = await Tesseract.createWorker('eng');
+
+    const interval  = parseInt($('inputInterval').value) || 15;
+    const threshold = parseInt($('inputThreshold').value) || 30;
+    const duration  = video.duration;
+
+    $('progressSection').style.display = '';
+    $('resultsSection').style.display  = 'none';
+    $('btnStart').disabled = true;
+    $('btnStart').textContent = '⏳ Идёт анализ...';
+    $('progressText').textContent = 'Загрузка OCR движка...';
+
+    // Создаём Tesseract worker
+    const worker = await Tesseract.createWorker('eng', 1, {
+        logger: () => {}   // тихий режим
+    });
     await worker.setParameters({
         tessedit_char_whitelist: '0123456789.FPS:',
     });
-    
-    // Получаем длительность и FPS
-    const duration = videoEl.duration;
-    const fps = await getVideoFPS();
-    const totalFrames = Math.floor(duration * fps);
-    const framesToAnalyze = Math.floor(totalFrames / interval);
-    
-    $('progressDetails').textContent = 
-        `Кадров: ~${totalFrames} | Анализ: ~${framesToAnalyze} кадров | FPS видео: ${fps.toFixed(0)}`;
-    
-    const canvas = document.createElement('canvas');
-    canvas.width = videoEl.videoWidth;
-    canvas.height = videoEl.videoHeight;
-    const ctx = canvas.getContext('2d');
-    
-    const debugCtx = $('debugCanvas').getContext('2d');
-    
-    let frameCount = 0;
+
+    // Canvas для захвата кадров
+    const tmpCanvas = document.createElement('canvas');
+    tmpCanvas.width  = video.videoWidth;
+    tmpCanvas.height = video.videoHeight;
+    const tmpCtx = tmpCanvas.getContext('2d', { willReadFrequently: true });
+
+    // Считаем примерный FPS видео (берём ~30 если неизвестно)
+    let videoFPS = 30;
+    const timeStep = interval / videoFPS;
+
     let analyzed = 0;
-    
-    for (let t = 0; t < duration; t += interval / fps) {
-        if (!isAnalyzing) break;
-        
-        // Seek to time
-        videoEl.currentTime = t;
-        await new Promise(r => { videoEl.onseeked = r; });
-        
-        // Draw frame
-        ctx.drawImage(videoEl, 0, 0);
-        
-        // Extract top ROI
-        const topNum = await extractFPS(ctx, canvas, rois.top, worker, debugCtx, 'top');
-        const botNum = await extractFPS(ctx, canvas, rois.bottom, worker, debugCtx, 'bot');
-        
-        if (topNum !== null) topData.push(topNum);
-        if (botNum !== null) botData.push(botNum);
-        
+    const totalSteps = Math.floor(duration / timeStep);
+
+    $('progressText').textContent = '0%';
+    $('progressDetail').textContent = `~${totalSteps} кадров для анализа`;
+
+    for (let t = 0; t < duration; t += timeStep) {
+        // Переходим к нужному моменту
+        video.currentTime = t;
+        await new Promise((r) => (video.onseeked = r));
+        await sleep(30); // даём браузеру отрисовать
+
+        tmpCtx.drawImage(video, 0, 0);
+
+        // Извлекаем числа
+        const topVal = await ocrRegion(tmpCtx, roi.top, worker);
+        const botVal = await ocrRegion(tmpCtx, roi.bot, worker);
+
+        if (topVal !== null) topData.push(topVal);
+        if (botVal !== null) botData.push(botVal);
+
         analyzed++;
-        const progress = (t / duration) * 100;
-        $('progressFill').style.width = progress + '%';
-        $('progressText').textContent = `${progress.toFixed(0)}% (${analyzed} кадров)`;
-        $('progressDetails').textContent = 
-            `Верх: ${topData.length} значений | Низ: ${botData.length} значений | Последние: ${topNum ?? '—'} / ${botNum ?? '—'}`;
-        
-        // Пауза для обновления UI
-        await new Promise(r => setTimeout(r, 10));
+        const pct = Math.min(100, (t / duration) * 100);
+        $('progressFill').style.width = pct + '%';
+        $('progressText').textContent = `${pct.toFixed(0)}%`;
+        $('progressDetail').textContent =
+            `Кадр ${analyzed}/${totalSteps} | Верх: ${topData.length} | Низ: ${botData.length} | Последние: ${topVal ?? '—'} / ${botVal ?? '—'}`;
+
+        // Даём UI обновиться
+        await sleep(5);
     }
-    
+
     await worker.terminate();
-    
+
     $('progressFill').style.width = '100%';
-    $('progressText').textContent = '✅ Готово!';
-    
-    isAnalyzing = false;
-    $('btnAnalyze').disabled = false;
-    $('btnAnalyze').textContent = '🚀 Начать анализ';
-    
+    $('progressText').textContent = '✅ Анализ завершён!';
+
+    busy = false;
+    $('btnStart').disabled = false;
+    $('btnStart').textContent = '🚀 Начать анализ';
+
     showResults(threshold);
 }
 
-async function extractFPS(ctx, canvas, roi, worker, debugCtx, label)
+async function ocrRegion(srcCtx, roiRect, worker) {
+    const { x, y, w, h } = roiRect;
+
+    // Вырезаем область
+    const imgData = srcCtx.getImageData(
+        Math.round(x), Math.round(y),
+        Math.round(w), Math.round(h)
+    );
+
+    // Создаём маленький canvas для Tesseract
+    const c = document.createElement('canvas');
+    c.width  = Math.round(w);
+    c.height = Math.round(h);
+    const cx = c.getContext('2d');
+    cx.putImageData(imgData, 0, 0);
+
+    // Предобработка: серый → контраст → бинаризация
+    const gray = cx.getImageData(0, 0, c.width, c.height);
+    const d = gray.data;
+    for (let i = 0; i < d.length; i += 4) {
+        // В серый
+        const v = d[i] * 0.299 + d[i+1] * 0.587 + d[i+2] * 0.114;
+        // Бинаризация: белый текст на фиолетовом фоне → порог ~140
+        const bin = v > 140 ? 255 : 0;
+        d[i] = d[i+1] = d[i+2] = bin;
+    }
+    cx.putImageData(gray, 0, 0);
+
+    // Увеличиваем для лучшего OCR
+    const big = document.createElement('canvas');
+    big.width  = c.width * 3;
+    big.height = c.height * 3;
+    const bx = big.getContext('2d');
+    bx.imageSmoothingEnabled = false;
+    bx.drawImage(c, 0, 0, big.width, big.height);
+
+    try {
+        const { data } = await worker.recognize(big);
+        const text = data.text.trim();
+        
+        // Ищем число после "FPS:" или просто число
+        const match = text.match(/(\d+\.?\d*)/);
+        if (match) {
+            const num = parseFloat(match[1]);
+            if (num > 0 && num < 10000) return num;  // разумный диапазон
+        }
+    } catch (e) {
+        // Ошибка OCR — пропускаем
+    }
+    return null;
+}
+
+// =============================================
+// 5. RESULTS
+// =============================================
+
+function showResults(threshold) {
+    $('resultsSection').style.display = '';
+
+    if (topData.length) {
+        const jumps = countJumps(topData, threshold);
+        $('topMax').textContent   = Math.max(...topData).toFixed(1);
+        $('topMin').textContent   = Math.min(...topData).toFixed(1);
+        $('topAvg').textContent   = (topData.reduce((a, b) => a + b, 0) / topData.length).toFixed(2);
+        $('topJumps').textContent = jumps;
+        $('topCount').textContent = topData.length;
+    }
+
+    if (botData.length) {
+        const jumps = countJumps(botData, threshold);
+        $('botMax').textContent   = Math.max(...botData).toFixed(1);
+        $('botMin').textContent   = Math.min(...botData).toFixed(1);
+        $('botAvg').textContent   = (botData.reduce((a, b) => a + b, 0) / botData.length).toFixed(2);
+        $('botJumps').textContent = jumps;
+        $('botCount').textContent = botData.length;
+    }
+}
+
+function countJumps(arr, threshold) {
+    let jumps = 0;
+    for (let i = 1; i < arr.length; i++) {
+        if (Math.abs(arr[i] - arr[i - 1]) > threshold) jumps++;
+    }
+    return jumps;
+}
+
+// =============================================
+// 6. EXPORT
+// =============================================
+
+$('btnTxt').onclick = exportTxt;
+$('btnCsv').onclick = exportCsv;
+$('btnCopy').onclick = copyResults;
+
+function getReportText() {
+    const threshold = parseInt($('inputThreshold').value) || 30;
+    let txt = 'РЕЗУЛЬТАТЫ АНАЛИЗА FPS\n';
+    txt += '='.repeat(40) + '\n\n';
+
+    if (topData.length) {
+        const avg = (topData.reduce((a, b) => a + b, 0) / topData.length).toFixed(2);
+        txt += '1. Верхнее число (FPS)\n';
+        txt += `   Максимальное число - ${Math.max(...topData).toFixed(1)}\n`;
+        txt += `   Минимальное число - ${Math.min(...topData).toFixed(1)}\n`;
+        txt += `   Среднее число - ${avg}\n`;
+        txt += `   Количество резких скачков (>${threshold}) - ${countJumps(topData, threshold)}\n\
+                    txt += `   Количество резких скачков (>${threshold}) - ${countJumps(topData, threshold)}\n`;
+        txt += `   Всего замеров - ${topData.length}\n\n`;
+    } else {
+        txt += '1. Верхнее число (FPS) — данные не распознаны\n\n';
+    }
+
+    if (botData.length) {
+        const avg = (botData.reduce((a, b) => a + b, 0) / botData.length).toFixed(2);
+        txt += '2. Нижнее число (FPS)\n';
+        txt += `   Максимальное число - ${Math.max(...botData).toFixed(1)}\n`;
+        txt += `   Минимальное число - ${Math.min(...botData).toFixed(1)}\n`;
+        txt += `   Среднее число - ${avg}\n`;
+        txt += `   Количество резких скачков (>${threshold}) - ${countJumps(botData, threshold)}\n`;
+        txt += `   Всего замеров - ${botData.length}\n`;
+    } else {
+        txt += '2. Нижнее число (FPS) — данные не распознаны\n';
+    }
+
+    return txt;
+}
+
+function exportTxt() {
+    const txt = getReportText();
+    download('fps_results.txt', txt, 'text/plain');
+}
+
+function exportCsv() {
+    let csv = 'index,top_fps,bottom_fps\n';
+    const maxLen = Math.max(topData.length, botData.length);
+    for (let i = 0; i < maxLen; i++) {
+        const t = i < topData.length ? topData[i] : '';
+        const b = i < botData.length ? botData[i] : '';
+        csv += `${i},${t},${b}\n`;
+    }
+    download('fps_data.csv', csv, 'text/csv');
+}
+
+function copyResults() {
+    const txt = getReportText();
+    navigator.clipboard.writeText(txt).then(() => {
+        const btn = $('btnCopy');
+        const original = btn.textContent;
+        btn.textContent = '✅ Скопировано!';
+        setTimeout(() => { btn.textContent = original; }, 2000);
+    }).catch(() => {
+        // Fallback
+        const ta = document.createElement('textarea');
+        ta.value = txt;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        const btn = $('btnCopy');
+        btn.textContent = '✅ Скопировано!';
+        setTimeout(() => { btn.textContent = '📋 Копировать'; }, 2000);
+    });
+}
+
+function download(filename, content, type) {
+    const blob = new Blob([content], { type: type + ';charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
